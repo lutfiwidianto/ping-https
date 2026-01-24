@@ -31,9 +31,47 @@ fi
 USER_AGENT="Mozilla/5.0 (Linux; Android)"
 INTERVAL=5
 
+# =========================
+# AIRPLANE MODE RESET CONFIG
+# =========================
+FAIL_STREAK_TRIGGER=3     # berapa kali NO-RESPONSE berturut-turut sebelum reset
+AIRPLANE_ON_SLEEP=3       # lama mode pesawat ON (detik)
+RESET_COOLDOWN=180        # minimal jeda antar reset (detik)
+
+last_reset_ts=0
+fail_streak=0
+
+airplane_on() {
+  su -c 'settings put global airplane_mode_on 1; am broadcast -a android.intent.action.AIRPLANE_MODE --ez state true' >/dev/null 2>&1
+}
+
+airplane_off() {
+  su -c 'settings put global airplane_mode_on 0; am broadcast -a android.intent.action.AIRPLANE_MODE --ez state false' >/dev/null 2>&1
+}
+
+do_airplane_reset() {
+  local now
+  now=$(date +%s)
+
+  # cooldown supaya gak spam
+  if [ $((now - last_reset_ts)) -lt $RESET_COOLDOWN ]; then
+    echo "⏳ Cooldown reset masih aktif (${RESET_COOLDOWN}s). Lewatkan reset."
+    return 0
+  fi
+
+  echo "✈️  Reset koneksi: Airplane ON -> OFF"
+  airplane_on
+  sleep "$AIRPLANE_ON_SLEEP"
+  airplane_off
+
+  last_reset_ts="$now"
+}
+
 echo "======================================"
 echo "Target URL : $TARGET_URL"
 echo "Tekan CTRL+C atau ketik 'stop' untuk berhenti"
+echo "Auto reset (Airplane) jika NO-RESPONSE x$FAIL_STREAK_TRIGGER"
+echo "Cooldown reset: ${RESET_COOLDOWN}s"
 echo "======================================"
 
 trap 'echo -e "\nDihentikan oleh user."; exit 0' INT
@@ -55,12 +93,22 @@ while :; do
 
   if [ "$HTTP_CODE" = "000" ]; then
     STATUS="NO-RESPONSE"
+    fail_streak=$((fail_streak + 1))
   elif [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 400 ]; then
     STATUS="OK"
+    fail_streak=0
   else
     STATUS="ERROR"
+    fail_streak=0
   fi
 
-  printf "[%s] STATUS: %-12s | HTTP: %s\n" "$TS" "$STATUS" "$HTTP_CODE"
-  sleep $INTERVAL
+  printf "[%s] STATUS: %-12s | HTTP: %s | FAIL_STREAK: %d\n" "$TS" "$STATUS" "$HTTP_CODE" "$fail_streak"
+
+  # Trigger reset kalau 000 beruntun
+  if [ "$fail_streak" -ge "$FAIL_STREAK_TRIGGER" ]; then
+    do_airplane_reset
+    fail_streak=0
+  fi
+
+  sleep "$INTERVAL"
 done
